@@ -1,6 +1,6 @@
 # Smart-Beta-and-Alternative-Indexing
 
-CAPM< model testing files explores hypothesis testing of CAPM model. 
+CAPM model testing files explores hypothesis testing of CAPM model. 
 Smart Beta Alternative Indexing file explores performance of alternative indexing algorithms
 
 Steps for Hypothesis testing (GRS test) for CAPM model:
