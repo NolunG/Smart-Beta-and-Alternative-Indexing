@@ -4,6 +4,8 @@ CAPM model testing files explores hypothesis testing of CAPM model.
 
 Smart Beta Alternative Indexing file explores performance of alternative indexing algorithms
 
+Complete code is in R using tidyverse packages, written in tidyverse style using functional programming concepts in mind 
+
 Steps for Hypothesis testing (GRS test) for CAPM model:
 Estimate the of the firm every year for the period for every year. Take window of 1,3,6,12,24 months, analyze and take the best beta for further calculations.
 
