@@ -1,5 +1,5 @@
 ---
-title: "Assignment_7_MVyas"
+title: "Smart Beta and Alternative Indexing"
 author: "Maharshi Vyas"
 date: "19/10/2021"
 output: html_document

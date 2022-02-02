@@ -1,0 +1,503 @@
+---
+title: "CAPM model testing"
+author: "Maharshi Vyas"
+date: "10/08/2021"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+# Setting up working directory
+memory.limit(size=1500000)
+#setwd("E:/GaTech/Sem 1/Mgm of Fin Inst/Assignments/Assignment 6_Rahul Jindal")
+```
+
+```{r}
+library(dplyr)
+library(data.table)
+library(haven)
+library(tidyverse)
+library(tidyquant)
+library(tidyr)
+library(lubridate)
+library(naniar)
+library(readxl)
+library(plotly)
+library(scales)
+library(fredr)
+library(openxlsx)
+library(fredr)
+library(zoo)
+library(frenchdata)
+library(NMOF)
+library(datetimeutils)
+library(lme4)
+library(geckor)
+library(tibbletime)
+library(zeallot)
+library(sandwich)
+library(lmtest)
+```
+
+
+## Descriptive Stats Function
+Descriptive Stats Function is taken from my submission of Assignment 4 itself
+```{r}
+getStat <- function(data,stat,statName) {
+  data %>%
+  group_by(BREAK_START) %>%
+  summarise(across(.cols = is.numeric, stat, na.rm = TRUE, .names = paste("{col}_",statName)))
+}
+
+getCount <- function(data) {
+  data %>%
+  group_by(BREAK_START) %>%
+  tally()
+}
+
+getStd <- function(data) {
+  data %>%
+  group_by(BREAK_START) %>%
+  summarise(across(.cols = is.numeric, sd, na.rm = TRUE, .names = "{col}_Standard_Daviation"))
+}
+
+getQuantile <- function(data, quantileValue) {
+  data %>%
+  group_by(BREAK_START) %>%
+  summarise(across(.cols = is.numeric, quantile, probs = c(quantileValue), na.rm = TRUE, .names ="{col}_p{quantileValue}"))  
+}
+
+getAllStats = function(all_data) {
+list( getStat(all_data, mean,'mean'),
+getCount(all_data),
+getStat(all_data,max, 'max'),
+getStat(all_data,min, 'min'),
+getStd(all_data),
+getQuantile(all_data, 0.25),
+getQuantile(all_data, 0.5),
+getQuantile(all_data,0.75))
+}
+
+```
+
+## Desc Stats without Group
+This function was just written to return all these stats without anyu sort of grouping. The function assumes the data will not have any non numeric columns
+```{r}
+
+getStatsWithoutGroup <- function(data, title) {
+  list(
+    title,
+    mean = sapply(data, mean, na.rm = TRUE),
+    std = sapply(data, sd, na.rm = TRUE),
+    p1 = sapply(data, quantile, na.rm=TRUE, probs = c(0.01)),
+    p5 = sapply(data, quantile, na.rm=TRUE, probs = c(0.05)),
+    p25 = sapply(data, quantile, na.rm = TRUE, probs = c(0.25)),
+    p50 = sapply(data, median, na.rm = TRUE),
+    p75 = sapply(data, quantile, na.rm = TRUE, probs = c(0.75)),
+    p95 = sapply(data, quantile, na.rm = TRUE, probs = c(0.95)),
+    p99 = sapply(data, quantile, na.rm = TRUE, probs = c(0.99)),
+    skewness = sapply(data, skewness, na.rm = TRUE),
+    kurtosis = sapply(data, kurtosis, na.rm = TRUE),
+    min = sapply(data, min, na.rm = TRUE),
+    max = sapply(data, max, na.rm = TRUE)
+  )
+}
+
+```
+
+## Correlation HeatMap Function
+This function is taken directly from my submission of Assignment 3 only
+```{r}
+plot_correlation = function(data,dataType){
+  correlation =  cor(data,use = "complete.obs")
+  melted_correlation = reshape2::melt(correlation)
+  heatplot = ggplot(data = melted_correlation, aes(x=Var1, y=Var2, fill = value)) +
+    geom_tile() +
+    scale_fill_gradient2( midpoint = 0, limit = c(-1,1), space = "Lab", name="Correlation") +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5),axis.text.x = element_text(angle=45, hjust=1)) +
+    labs(title = paste(dataType, "Correlation Heatmap")) +
+    coord_fixed()
+  ggplotly(heatplot)
+}
+```
+
+## Plot Variables Line graph
+This function is taken directly from my submission of Assignment 3 with the macroeconomic part removed
+```{r}
+plot_data_var = function(master_data_join, datatype) {
+  len <- dim(master_data_join)
+  plot <- master_data_join %>% plot_ly()
+  
+  for(i in seq_along(master_data_join)) {
+    if (i<2) {
+      next 
+    } else  {  
+      x <- plot %>% add_trace(x = ~BREAK_START, y=master_data_join[[i]] ,mode = 'bar', name=colnames(master_data_join)[i])
+    }
+    plot <- x
+  }
+  
+  plot %>% 
+    layout(title     = datatype,
+         barmode   = 'relative',
+         #hovermode = 'compare',
+         xaxis     = list(title=''),
+         margin    = list(l = 75, r = 75, b = 50, t = 50, pad = 4),
+         xaxis     = list(title = ""),
+         yaxis     = list(side = 'left', 
+                       title = "Financial Variable", 
+                       showgrid = FALSE, 
+                       zeroline = TRUE, 
+                       color = 'steelblue'),
+         legend = list(traceorder = 'reversed',orientation = "h"))
+}
+
+```
+
+
+## Used Beta Functions
+Beta functions to utilize again. First one is used for grouping by cusip and date(break)start) and then calculating, the second one directly calculated beta for given vectors
+```{r}
+## This function returns beta value, based on grouping the input data by cusip and break_start, which is the break of date i.e. yearly groups, quaterly groups or monthly groups
+getBeta = function(data, response, indVar, title) {
+          
+    data <-  data %>%
+              group_by(CUSIP,BREAK_START) %>%
+              summarise(Cor = cov(!!sym(response), !!sym(indVar))/var(!!sym(indVar), na.rm = TRUE))
+    names(data)[3] = title
+    data
+}
+
+getBetaDirect = function(reponse, indVar) {
+    cov(reponse,indVar)/var(indVar, na.rm = TRUE)
+}
+
+```
+
+## Reading and Filtering Daily Data
+Following piece of code is utilized only once, I read the whole daily data, filtered it out according to out need in the assignment and stored it again in the hard disk.
+I then read only the relvant data, and process so that I don't have extra data in the memory at any time.
+```{r}
+path = "C:\\Users\\Maharshi Vyas\\Downloads\\dsf_new.csv"
+
+daily_data<- fread(path,select=c("DATE","CUSIP","SHRCD","HSICCD","RET","VWRETD","PRC","SHROUT"),header = T) %>% tibble()
+
+
+
+# daily_data<- fread("dsf_data.csv",select=c("DATE","CUSIP","SHRCD","PRC","ASK","BID","ASKHI","BIDLO","OPENPRC","RET","SHROUT","VOL","VWRETD"),header = T)
+
+# Filter clean and process daily data
+daily_data<- daily_data %>% 
+              filter(SHRCD==10 | SHRCD==11) %>% 
+              filter(DATE > 19950000) %>%
+              select(-c("SHRCD")) %>%
+              mutate(RET = as.numeric(RET),
+                     VWRETD = as.numeric(VWRETD)) %>%
+              drop_na(RET) 
+
+write.csv(daily_data, "D:\\Data\\daily_data.csv")
+
+#%>%
+ #             mutate(DATE = as.Date(as.character(DATE),format="%Y%m%d"))
+
+
+#daily_data<- daily_data[,-c("SHRCD")]
+
+# daily_data$PRC <- abs(daily_data$PRC)
+
+# daily_data$DATE<- as.Date(as.character(daily_data[["DATE"]]),format="%Y%m%d")
+# 
+# daily_data$RET <- as.numeric(daily_data$RET)
+# 
+# daily_data<- daily_data[-which(is.na(daily_data$RET)),]
+
+```
+```{r}
+daily_data <- fread( "D:\\Data\\daily_data.csv",select=c("DATE","CUSIP","HSICCD","RET","VWRETD","PRC","SHROUT"),header = T) %>% tibble()
+
+daily_data <- daily_data %>% mutate(DATE = as.Date(as.character(DATE),format="%Y%m%d"))
+
+```
+
+
+
+
+## Fetch Risk Free Rate
+Function fetches risk free data from french API, joins it with daily data and computes the excess returns of stocks and market
+```{r}
+french_data <- French(getwd(),dataset = "rf",frequency = "daily")
+
+french_data$DATE <- row.names(french_data)
+rownames(french_data) <- NULL
+french_data <- french_data %>% 
+              mutate(DATE = as.Date(DATE)) 
+
+daily_data<- daily_data %>% 
+             left_join(french_data)  %>% 
+             mutate(rf = as.numeric(rf),
+                    excess_return = RET - rf,
+                    mkt_excess_return = VWRETD - rf)
+```
+## Calculating Betas
+```{r}
+calculate_all_betas <- function(daily_data) {
+
+  daily_data <- daily_data %>% mutate(BREAK_START = as.Date(cut(DATE, breaks = "year"),),
+                     BREAK_START = BREAK_START %m+% years(1)) %>% ungroup()
+
+  betas_1_year <-  getBeta(daily_data,"excess_return","mkt_excess_return", "beta_1_year")
+   
+                  
+  ## Keep in mind that 2 years beta need 2 years of returns to compute, so the values  will start from 1997 
+  all_beta_table <- daily_data %>% 
+                mutate(BREAK_START = as.Date(cut(DATE, breaks = "2 year"),),
+                       BREAK_START = BREAK_START %m+% years(2)) %>%
+                group_by(CUSIP, BREAK_START) %>% 
+                getBeta("excess_return","mkt_excess_return", "beta_2_year")
+  ## We have to group by twice for the 2 years betas. As the first one only computes it for odd numbered years, now after filtering for one year, we will get betas for the even number of years as well
+  
+  all_beta_table <- daily_data %>% 
+                filter(DATE >= '1996-01-01') %>%
+                mutate(BREAK_START = as.Date(cut(DATE, breaks = "2 year"),),
+                       BREAK_START = BREAK_START %m+% years(2)) %>%
+                group_by(CUSIP, BREAK_START) %>% 
+                getBeta("excess_return","mkt_excess_return", "beta_2_year") %>% 
+                union(all_beta_table)
+  
+  
+  all_beta_table <- merge(betas_1_year, all_beta_table, by = c("CUSIP","BREAK_START"), all.x = TRUE)
+  
+  
+  daily_data <- daily_data %>% 
+                mutate(BREAK_START = as.Date(cut(DATE, breaks = "6 month"),),
+                       MON = month(DATE)) %>%
+                filter(MON > 6) %>%
+                mutate(BREAK_START = BREAK_START %m+% months(6))
+  
+  beta_table <- getBeta(daily_data,"excess_return","mkt_excess_return", "beta_6_month")
+  all_beta_table <- merge(all_beta_table, beta_table, by = c("CUSIP","BREAK_START"), all.x = TRUE)
+  
+  daily_data <- daily_data %>% 
+                mutate(BREAK_START = as.Date(cut(DATE, breaks = "3 month"),),
+                       MON = month(DATE)) %>%
+                filter(MON > 9) %>%
+                mutate(BREAK_START = BREAK_START %m+% months(3))
+  
+  beta_table <- getBeta(daily_data,"excess_return","mkt_excess_return", "beta_3_month")
+  all_beta_table <- merge(all_beta_table, beta_table, by = c("CUSIP","BREAK_START"), all.x = TRUE)
+  
+  daily_data <- daily_data %>% 
+               mutate(BREAK_START = as.Date(cut(DATE, breaks = "month"),),
+               MON = month(DATE)) %>%
+               filter(MON > 11) %>%
+               mutate(BREAK_START = BREAK_START %m+% months(1)) 
+  
+  beta_table <- getBeta(daily_data,"excess_return","mkt_excess_return", "beta_1_month")
+  all_beta_table <- merge(all_beta_table, beta_table, by = c("CUSIP","BREAK_START"), all.x = TRUE)
+}
+
+all_betas_unwinsored <- calculate_all_betas(daily_data)
+
+```
+
+Please note 2nd part where we should calculate betas from monthly data is done later, once we finish everything from daily data
+## Winsoring from Welch 
+Filtering returns as done in the Welch(2021)
+```{r}
+daily_data <- daily_data %>% 
+              drop_na(excess_return, mkt_excess_return) %>%
+              mutate(excess_return = ifelse(mkt_excess_return > 0, 
+                                            ifelse(excess_return > 4*mkt_excess_return , 4*mkt_excess_return, 
+                                                   ifelse(excess_return < -2*mkt_excess_return, -2*mkt_excess_return, 
+                                                          excess_return)), 
+                                            ifelse(excess_return < 4*mkt_excess_return, 4*mkt_excess_return, 
+                                                   ifelse(excess_return > -2*mkt_excess_return, -2*mkt_excess_return,
+                                                          excess_return))
+                                            )
+                      ) 
+
+all_betas <- calculate_all_betas(daily_data)
+
+
+
+```
+
+
+
+## Descriptive Stats And Correlation
+Computing Descriptive Stats and Correlation of all the betas
+```{r}
+all_beta_stats <- getStatsWithoutGroup(all_betas %>% select(-c(CUSIP, BREAK_START)), "all_betas_winsored")
+all_beta_stats
+
+all_betas_unwinsored_stats <- getStatsWithoutGroup(all_betas_unwinsored %>% select(-c(CUSIP, BREAK_START)), "all_betas_unwinsored")
+all_betas_unwinsored_stats
+
+plot_correlation(all_betas %>% select(-c("BREAK_START", "CUSIP")), "Various Betas")
+
+```
+## Industy Wise Beta
+Calculating and plotting betas of each industry over time
+```{r}
+
+industries <- daily_data %>%
+              distinct(CUSIP,HSICCD) %>%
+              mutate( industry = case_when(
+                      HSICCD %in% c(1:999) ~ "Agriculture_Forestry_Fishing",
+                      HSICCD %in% c(1000:1499) ~ "Mining",
+                      HSICCD %in% c(1500:1799) ~ "Construction",
+                      HSICCD %in% c(2000:3999) ~ "Manufacturing",
+                      HSICCD %in% c(4000:4999) ~ "Transport_Utilities",
+                      HSICCD %in% c(5000:5199) ~ "Wholesale",
+                      HSICCD %in% c(5200:5999) ~ "Retail",
+                      HSICCD %in% c(6000:6799) ~ "Finance_Insurance_RealEstate",
+                      HSICCD %in% c(7000:8999) ~ "Services",
+                      HSICCD %in% c(9000:9999) ~ "Public",
+                      TRUE ~ "Other"
+                      )
+              ) %>%
+              select(-c("HSICCD"))
+
+
+industry_betas <- all_betas %>% inner_join(industries) %>% 
+                  select(c("BREAK_START", "industry", "beta_1_year")) %>%
+                  group_by(BREAK_START,industry) %>%
+                  summarise(across(.cols = is.numeric, mean, na.rm = TRUE, .names = "Mean_Beta"))
+                            
+industry_betas <- industry_betas %>% pivot_wider(names_from = industry, values_from = Mean_Beta)
+
+
+plot_data_var(industry_betas, "Industry WIde Betas")
+
+```
+## Betas From Monthly Data
+Step 2: Calculating Betas for 12 months, 24 months, 36 months from monthly data and monthly returns
+```{r}
+
+monthly_data <- fread("C:\\Users\\Maharshi Vyas\\Downloads\\msf_new2.csv") %>% tibble()
+
+monthly_data <- monthly_data %>%
+              filter (SHRCD %in% c(10,11)) %>%
+              filter(DATE > 19950000) %>%
+              arrange (CUSIP,DATE) %>%
+              mutate(RET = as.numeric(RET)) %>%
+              drop_na (PRC, RET) %>%
+              mutate(DATE = as.Date(parse_date_time(DATE, orders = "Ymd")),
+                     PRC = ABS(PRC),
+                     MARKET_CAP = abs(PRC)*SHROUT,
+                     DATE_START = floor_date(DATE, unit = "month")) %>%
+              inner_join(french_data) %>%
+              mutate(rf = as.numeric(rf)) 
+
+
+monthly_data <- monthly_data %>%              
+                    mutate(excess_return = RET - rf,
+                     mkt_excess_return = VWRETD - rf) %>%
+                select(c("DATE_START","CUSIP", "excess_return", "mkt_excess_return"))
+
+
+applied_roll_function = function(stock_return ,mkt_return , windowSize){
+  rolling_beta <- rollify(getBetaDirect,window = windowSize)
+  rolling_beta(stock_return, mkt_return)
+}
+
+rolling_beta_calc = function(data, window){
+  
+  data <- data %>%
+              group_by(CUSIP) %>%
+              filter(n() >= window) %>%
+              mutate(rolling_beta = lag(applied_roll_function(excess_return,mkt_excess_return,window)))%>%
+              filter(month(DATE_START)==1)%>%
+              drop_na(rolling_beta)
+  
+}
+
+beta_1_year_by_monthly <- rolling_beta_calc(monthly_data,12) %>% rename(beta_1_year = rolling_beta)
+beta_2_year_by_monthly <- rolling_beta_calc(monthly_data,24) %>% rename(beta_2_year = rolling_beta)
+beta_3_year_by_monthly <- rolling_beta_calc(monthly_data,36) %>% rename(beta_3_year = rolling_beta)
+
+monthly_betas <- beta_1_year_by_monthly %>% 
+                inner_join(beta_2_year_by_monthly, by = c("CUSIP","DATE_START")) %>%
+                inner_join(beta_3_year_by_monthly, by = c("CUSIP","DATE_START")) 
+
+
+monthly_beta_stats <- getStatsWithoutGroup(monthly_betas %>% ungroup() %>% select(c(beta_1_year, beta_2_year, beta_3_year)), "all_betas_monthly")
+monthly_beta_stats
+
+rm(monthly_data)
+```
+
+## CapM, Beta and Portfolios
+```{r}
+beta_ranks <- all_betas %>%
+              select(c("CUSIP", "BREAK_START", "beta_1_year")) %>%
+              group_by(BREAK_START) %>%
+              mutate(deca_ranks = ntile(`beta_1_year`,10))
+
+daily_data_joined <- daily_data %>%
+              filter(DATE >= '1996-01-01') %>%
+              mutate(MARKET_CAP = abs(PRC)*SHROUT,
+                     BREAK_START = floor_date(DATE, unit = "year")) %>%
+              left_join(beta_ranks, by = c("BREAK_START", "CUSIP"))
+
+daily_portfolio_returns <- daily_data_joined %>% 
+            drop_na(deca_ranks) %>%
+            select(c("DATE", "CUSIP", "excess_return", "mkt_excess_return", "MARKET_CAP", "deca_ranks")) %>%
+            group_by(DATE, deca_ranks) %>%
+            summarise(mean_excess_return = mean(excess_return),
+                      mkt_excess_return = last(mkt_excess_return),
+                      weighted_returns = weighted.mean(excess_return,MARKET_CAP, na.rm = TRUE)) %>%
+            ungroup()
+
+portfolio_betas <- daily_portfolio_returns %>% 
+            mutate(BREAK_START = floor_date(DATE, unit = "year")) %>%
+            group_by(BREAK_START, deca_ranks) %>%
+            summarise (Eq_Beta = getBetaDirect(mean_excess_return, mkt_excess_return),
+                      Weighted_Beta = getBetaDirect(weighted_returns, mkt_excess_return),
+                      Eq_yearly_returns = prod(1+mean_excess_return)-1,
+                      Weighted_yearly_returns = prod(1+weighted_returns)-1,
+                      mkt_excess_return = prod(1+mkt_excess_return)-1) %>%
+            ungroup() %>%
+            arrange(BREAK_START, deca_ranks)
+
+
+```
+
+## Mean Beta, Cumulative Returns and Neway T-tests
+```{r}
+mean_betas <- portfolio_betas %>%
+            select(-c(BREAK_START, Eq_yearly_returns, Weighted_yearly_returns)) %>%
+            group_by(deca_ranks) %>%
+            summarise(across(.cols = is.numeric, mean, .names = "{col}_Mean")) %>%
+            ungroup()
+
+cum_returns <- portfolio_betas %>% 
+            group_by(deca_ranks) %>% 
+            mutate(Eq_cum_returns = cumprod(1+Eq_yearly_returns)-1, 
+                   Wtd_cum_return = cumprod(1+Weighted_yearly_returns)-1,
+                   market_cum_return = cumprod(1+mkt_excess_return)-1) %>%
+            select(c(BREAK_START, deca_ranks,Eq_cum_returns, Wtd_cum_return, market_cum_return)) %>%
+            ungroup()
+
+
+portfolio_models <- daily_portfolio_returns %>% 
+            mutate(BREAK_START = floor_date(DATE, unit = "year")) %>%
+            group_by( deca_ranks) %>%
+            do(eq_model = lm(mean_excess_return ~ mkt_excess_return, data = .) ,
+               wtd_model = lm(weighted_returns ~ mkt_excess_return, data = .)) %>%
+            mutate(eq_alpha = coeftest(eq_model, NeweyWest(eq_model,lag=5, adjust=TRUE, prewhite = FALSE))[1],
+                   wtd_alpha = coeftest(wtd_model, NeweyWest(wtd_model,lag=5, adjust=TRUE, prewhite = FALSE))[1],
+                   eq_alpha_significance = coeftest(eq_model, NeweyWest(eq_model,lag=5, adjust=TRUE, prewhite = FALSE))[7] < 0.05,
+                   wtd_alpha_significance = coeftest(wtd_model, NeweyWest(wtd_model,lag=5, adjust=TRUE, prewhite = FALSE))[7] < 0.05) %>%
+            select(-c(eq_model, wtd_model))
+
+
+plot_data_var(cum_returns %>% filter(deca_ranks == 9) %>% select(-c(deca_ranks)), "Rank 10 Beta")
+plot_data_var(cum_returns %>% filter(deca_ranks == 5) %>% select(-c(deca_ranks)), "Rank 5 Beta")
+plot_data_var(cum_returns %>% filter(deca_ranks == 1) %>% select(-c(deca_ranks)), "Rank 1 Beta")
+
+```
