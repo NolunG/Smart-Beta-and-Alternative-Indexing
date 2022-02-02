@@ -28,4 +28,4 @@ trailing five-year average gross sales (Sales), trailing five-year average gross
 trailing five year gross investments (Investment), trailing five year profitability, return on assets, (Profitability), asset turnover (Asset turnover), Altman Z-score (Altman-Z), Ohlson score (Ohlson-O)
 
 Market Variables:
-Beta, Total Volatility, Average monthly volatility in last year, Annulized volatility, Idiosyncratic Volatility (defined as the added formalue as picture)
+Beta, Total Volatility, Average monthly volatility in last year, Annulized volatility, Idiosyncratic Volatility (as defined in the added picture) of CAPM, Fama French 3 factor and 5 factor model
